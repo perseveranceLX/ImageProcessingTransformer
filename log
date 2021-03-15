@@ -1,0 +1,4 @@
+=> creating model 'ipt_base'
+Namespace(batch_size=16, data='/home/lizhexin/dataset/rgb_superview_min_patched', dist_backend='nccl', dist_url='tcp://224.66.41.62:23456', distributed=False, epochs=100, evaluate=False, gpu=None, lr=0.1, lr_policy='step', momentum=0.9, multiprocessing_distributed=False, power=1.0, pretrained=False, print_freq=10, rank=-1, resume='', save_path='./ckpt', seed=0, start_epoch=0, warmup_epochs=0, warmup_lr_multiplier=0.1, weight_decay=0.0001, workers=8, world_size=-1)
+input shape: torch.Size([16, 3, 16, 16]) cuda:0
+embedding shape: torch.Size([16, 16, 1024])

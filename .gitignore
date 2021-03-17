@@ -6,3 +6,5 @@ checkpoints/
 ckpt/
 *.log
 logs/
+__pycache__/
+dataset/__pycache__/

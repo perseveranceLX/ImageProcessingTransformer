@@ -22,6 +22,7 @@ import torchvision.datasets as datasets
 #import torchvision.models as models
 from timm.models.ipt import ipt_base
 from dataset.dataset import *
+from datetime import datetime
 
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
@@ -88,6 +89,10 @@ tasksets = ["defog", "denoise", "SRx2", "SRx3", "SRx4"]
 def main():
     args = parser.parse_args()
 
+    now = datetime.now()
+    timestr = now.strftime("%m-%d-%H_%M_%S")
+
+    args.save_path = os.path.join(args.save_path, timestr)
     save_path = args.save_path
     if not os.path.exists(save_path):
         os.makedirs(save_path)
@@ -184,8 +189,8 @@ def main_worker(gpu, ngpus_per_node, args):
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            best_acc1 = checkpoint['best_acc1']
+            #args.start_epoch = checkpoint['epoch']
+            args.start_epoch = 6
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -225,9 +230,11 @@ def main_worker(gpu, ngpus_per_node, args):
                 SRDataset(root_dir, scale='x4', mode='bilinear', transform=trans),
                 DehazeDataset(root_dir, severity=1, transform=trans),
                 ]
-    train_loader = ImageProcessingIter(datasets, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    train_loader = ImageProcessingIter(datasets, batch_size=args.batch_size, shuffle=False, num_workers=16)
 
-    #args.epoch_size = len(datasets[0]) // args.batch_size
+    args.epoch_size = train_loader.get_num_batches()
+    print(f"Each epoch contains {args.epoch_size} iterations")
+
     if args.distributed:
         raise RuntimeError("distributed not implemented")
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -280,17 +287,17 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     for i, (target, input, task_id) in enumerate(train_loader):
         # set random task
         model.module.set_task(task_id)
+        #print(f"Iter {i}, task_id: {task_id}")
         #for m in model.module.modules():
            # if isinstance(m, )
             #print(m.weight.device)
-        #global_iter = epoch * args.epoch_size + i
-        '''
+        global_iter = epoch * args.epoch_size + i
+        
         if args.lr_policy == 'iter_poly':
             local_lr = adjust_learning_rate_poly(optimizer, global_iter, args)
         elif args.lr_policy == 'cosine':
             local_lr = adjust_learning_rate_cosine(optimizer, global_iter, args)
-        '''
-        local_lr = 0.
+        
         # measure data loading time
         data_time.update(time.time() - end)
 
@@ -323,7 +330,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'LR: {lr: .6f}'.format(
                    epoch, i, batch_time=batch_time,
-                   data_time=data_time, loss=losses, lr=args.lr))
+                   data_time=data_time, loss=losses, lr=local_lr))
 
     '''
     for i, (input, target, task_id) in enumerate(train_loader):

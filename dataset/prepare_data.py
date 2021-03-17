@@ -30,8 +30,8 @@ def multiple_file_types(root_dir, types=[]):
 
 
 if __name__ == "__main__":
-    data_dir = "/home/lizhexin/dataset/remote_sense"
-    target_dir = "/home/lizhexin/dataset/patched_images"
+    data_dir = "/data1/share/remote_sensing/rgb_superview"
+    target_dir = "/data1/share/remote_sensing/patched_images/rgb_superview"
 
     trans = transforms.Compose([
                 transforms.ToTensor(),
@@ -44,10 +44,10 @@ if __name__ == "__main__":
         os.makedirs(target_dir)
     # pdb.set_trace()
 
-    print(len(multiple_file_types(data_dir, ["*/*.jpg", "*/*.png", "*/*.tif"])))
+    print(len(multiple_file_types(data_dir, ["*.jpg", "*.png", "*.tif"])))
     #print(len(multiple_file_types(data_dir, ["*.jpg", "*.png", "*.tif"])))
 
-    for path in tqdm(multiple_file_types(data_dir, ["*/*.jpg", "*/*.png", "*/*.tif"])):
+    for path in tqdm(multiple_file_types(data_dir, ["*.jpg", "*.png", "*.tif"])):
         img = cv2.imread(path)
         img = trans(img).numpy() * 255.
         img = np.transpose(img, (1, 2, 0))
@@ -58,8 +58,6 @@ if __name__ == "__main__":
             patch_name = "{}_{}_{}.png".format(sub_dir, file_name.split('.')[0], i)
 
             cv2.imwrite(os.path.join(target_dir, patch_name), patches[i])
-
-        break
 
         
         

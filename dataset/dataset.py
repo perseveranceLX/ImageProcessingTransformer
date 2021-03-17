@@ -155,6 +155,9 @@ class ImageProcessingIter(object):
 
         return src, trg, task_id
 
+    def get_num_batches(self):
+        return self.stop_num
+
 
 
 
@@ -172,7 +175,7 @@ if __name__ == "__main__":
                 SRDataset(root_dir, scale='x4', mode='bilinear', transform=trans),
                 DehazeDataset(root_dir, severity=1, transform=trans),
                 ]
-    train_loader = ImageProcessingIter(datasets, batch_size=5, shuffle=False, num_workers=4)
+    train_loader = ImageProcessingIter(datasets, batch_size=5, shuffle=False, num_workers=16)
 
     count = 0
     for i, (src, target, task_id) in enumerate(train_loader):

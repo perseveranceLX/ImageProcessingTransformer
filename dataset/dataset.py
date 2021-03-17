@@ -136,27 +136,28 @@ class ImageProcessingIter(object):
             self.dataloaders.append(dataloader)
 
         self.iters = []
-        for dataloader in self.dataloaders:
-            self.iters.append(iter(dataloader))
-        
         self.num = 0
         self.stop_num = len(self.dataloaders[0])
+        self._reset()
 
     def __iter__(self):
         return self
+
+    def _reset(self):
+        self.num = 0
+        self.iters.clear()
+        for dataloader in self.dataloaders:
+            self.iters.append(iter(dataloader))
 
     def __next__(self):
         task_id = random.randint(0, 5)
         self.num += 1
         src, trg = self.iters[task_id].next()
         if self.num > self.stop_num:
-            self.num = 0
+            self._reset()
             raise StopIteration
 
         return src, trg, task_id
-
-    def get_num_batches(self):
-        return self.stop_num
 
 
 

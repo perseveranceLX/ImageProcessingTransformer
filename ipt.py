@@ -27,8 +27,8 @@ from functools import partial
 
 from torch.nn.modules.activation import Tanhshrink
 
-from .helpers import load_pretrained
-from .layers import to_2tuple, trunc_normal_
+from timm.model.helpers import load_pretrained
+from timm.model.layers import to_2tuple, trunc_normal_
 
 '''
 def _cfg(url='', **kwargs):

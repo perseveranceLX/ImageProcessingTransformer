@@ -291,7 +291,7 @@ class Tail(nn.Module):
         
     def forward(self, x):
         out = self.output(x)
-        print("task_id:", self.task_id)
+        #print("task_id:", self.task_id)
         #print("shape of tail's output:", x.shape)
         out = self.bn1(out)
         return out

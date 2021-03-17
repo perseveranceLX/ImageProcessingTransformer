@@ -20,7 +20,7 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 #import torchvision.models as models
-from timm.models.ipt import ipt_base
+from ipt import ipt_base
 from dataset.dataset import *
 from datetime import datetime
 

@@ -4,6 +4,7 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader, dataloader
 import os
 import glob
+import time
 import cv2
 from imagecorruptions import corrupt
 
@@ -123,6 +124,40 @@ class SRDataset(Dataset):
         return self.transform(src_img), self.transform(trg_img)
 
 
+class ImageProcessDataset(Dataset):
+    def __init__(self, root_dir, transform=None):
+        super(ImageProcessDataset).__init__()
+        self.file_list = self._make_dataset(root_dir)
+        self.transform = transform
+
+    def _make_dataset(self, root_dir):
+        file_list = multiple_file_types(root_dir, ["*.png", "*.jpg", "*.jpeg", "*.tif"])
+        file_list.sort()
+        return file_list
+
+    def __len__(self):
+        return len(self.file_list)
+
+    def _scale_size(self, src_h, src_w, scale):
+        return (round(src_h / scale), round(src_w / scale))
+
+    def __getitem__(self, index):
+        src_img = cv2.imread(self.file_list[index])
+        src_h, src_w, _ = src_img.shape
+        target_group = []
+        target_group.append(add_gaussian_noise(src_img, sigma=30))
+        target_group.append(add_gaussian_noise(src_img, sigma=50))
+        target_group.append(add_fog(src_img, severity=1))
+        target_group.append(cv2.resize(src_img, self._scale_size(src_h, src_w, 2), cv2.INTER_LINEAR))
+        target_group.append(cv2.resize(src_img, self._scale_size(src_h, src_w, 3), cv2.INTER_LINEAR))
+        target_group.append(cv2.resize(src_img, self._scale_size(src_h, src_w, 4), cv2.INTER_LINEAR))
+
+        if self.transform:
+            return self.transform(src_img), [self.transform(tgt) for tgt in target_group]
+        else:
+            return src_img, target_group
+
+
 class ImageProcessingIter(object):
     def __init__(self, datasets=[], batch_size=1, shuffle=False, 
                        sampler=None, num_workers=0):
@@ -169,19 +204,21 @@ if __name__ == "__main__":
     trans = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                                 ])
-    datasets =  [DenoiseDataset(root_dir, sigma=30, transform=trans),
-                DenoiseDataset(root_dir, sigma=50, transform=trans),
-                SRDataset(root_dir, scale='x2', mode='bilinear', transform=trans),
-                SRDataset(root_dir, scale='x3', mode='bilinear', transform=trans),
-                SRDataset(root_dir, scale='x4', mode='bilinear', transform=trans),
-                DehazeDataset(root_dir, severity=1, transform=trans),
-                ]
-    train_loader = ImageProcessingIter(datasets, batch_size=5, shuffle=False, num_workers=16)
+    dataset = ImageProcessDataset(root_dir, transform=trans)
+    train_loader = DataLoader(dataset, batch_size=5, shuffle=False, num_workers=16)
 
+    start = time.time()
     count = 0
-    for i, (src, target, task_id) in enumerate(train_loader):
-        print(task_id)
-        count += 1
+    for i in range(5):
+        for step, (src, tgt_group) in enumerate(train_loader):
+            task_id = random.randint(0, 5)   # [0,...,5]
+            src, taregt, task_id = src, tgt_group[task_id], task_id
+
+            
+            print("elapse time: {}s".format(time.time() - start))
+
+            start = time.time()
+            count += 1
 
     print("total iter: ", count)
  

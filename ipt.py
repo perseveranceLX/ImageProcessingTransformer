@@ -222,7 +222,7 @@ class PatchEmbed(nn.Module):
         
         p = self.patch_size
         num_patches = (H // p) * (W // p)
-        out = torch.zeros((N, num_patches, self.dim)).cuda()
+        out = torch.zeros((N, num_patches, self.dim)).to(x.device)
         #print(f"feature map size: {ori_shape}, embedding size: {out.shape}")
         i, j = 0, 0
         for k in range(num_patches):
@@ -249,7 +249,7 @@ class DePatchEmbed(nn.Module):
         N, num_patches, dim = x.shape
         _, C, H, W = ori_shape
         p = self.patch_size
-        out = torch.zeros(ori_shape).cuda()
+        out = torch.zeros(ori_shape).to(x.device)
         i, j = 0, 0
         for k in range(num_patches):
             if i + p > W:
@@ -352,7 +352,9 @@ class ImageProcessingTransformer(nn.Module):
         x = self.headsets[self.task_id](x)
         x, ori_shape = self.patch_embedding(x)
         #print("embedding shape:", x.shape)
+        # print(x.device, self.pos_embed.device)
         x = x + self.pos_embed[:, :x.shape[1]]
+
 
         for blk in self.encoder:
             x = blk(x)

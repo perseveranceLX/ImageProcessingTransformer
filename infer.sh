@@ -1,0 +1,1 @@
+python inference.py --checkpoint /home/lizhexin/deit/ckpt/03-17-12_29_37/checkpoint.pth.tar

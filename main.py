@@ -278,7 +278,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         local_lr = adjust_learning_rate_epoch_poly(optimizer, epoch, args)
         
 
-    for i, (input_group, target)  in enumerate(train_loader):
+    for i, (target, input_group) in enumerate(train_loader):
         # set random task
         task_id = random.randint(0, 5)
         input = input_group[task_id]

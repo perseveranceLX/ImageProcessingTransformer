@@ -190,7 +190,7 @@ def main_worker(gpu, ngpus_per_node, args):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
             #args.start_epoch = checkpoint['epoch']
-            args.start_epoch = 6
+            args.start_epoch = 10
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -223,16 +223,10 @@ def main_worker(gpu, ngpus_per_node, args):
     trans = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                                 ])
-    datasets =  [DenoiseDataset(root_dir, sigma=30, transform=trans),
-                DenoiseDataset(root_dir, sigma=50, transform=trans),
-                SRDataset(root_dir, scale='x2', mode='bilinear', transform=trans),
-                SRDataset(root_dir, scale='x3', mode='bilinear', transform=trans),
-                SRDataset(root_dir, scale='x4', mode='bilinear', transform=trans),
-                DehazeDataset(root_dir, severity=1, transform=trans),
-                ]
-    train_loader = ImageProcessingIter(datasets, batch_size=args.batch_size, shuffle=False, num_workers=16)
+    dataset = ImageProcessDataset(root_dir, transform=trans)
+    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
-    args.epoch_size = train_loader.get_num_batches()
+    args.epoch_size = len(train_loader)
     print(f"Each epoch contains {args.epoch_size} iterations")
 
     if args.distributed:
@@ -284,8 +278,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         local_lr = adjust_learning_rate_epoch_poly(optimizer, epoch, args)
         
 
-    for i, (target, input, task_id) in enumerate(train_loader):
+    for i, (input_group, target)  in enumerate(train_loader):
         # set random task
+        task_id = random.randint(0, 5)
+        input = input_group[task_id]
         model.module.set_task(task_id)
         #print(f"Iter {i}, task_id: {task_id}")
         #for m in model.module.modules():

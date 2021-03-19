@@ -27,8 +27,8 @@ from functools import partial
 
 from torch.nn.modules.activation import Tanhshrink
 
-from timm.model.helpers import load_pretrained
-from timm.model.layers import to_2tuple, trunc_normal_
+from timm.models.helpers import load_pretrained
+from timm.models.layers import to_2tuple, trunc_normal_
 
 '''
 def _cfg(url='', **kwargs):
@@ -345,18 +345,7 @@ class ImageProcessingTransformer(nn.Module):
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
-    '''
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {'pos_embed', 'cls_token'}
 
-    def get_classifier(self):
-        return self.head
-
-    def reset_classifier(self, num_classes, global_pool=''):
-        self.num_classes = num_classes
-        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-    '''
     def forward(self, x):
         assert 0 <= self.task_id <= 5
         #print("input shape:", x.shape, x.device)

@@ -147,10 +147,10 @@ class ImageProcessDataset(Dataset):
         target_group = []
         target_group.append(add_gaussian_noise(src_img, sigma=30))
         target_group.append(add_gaussian_noise(src_img, sigma=50))
-        target_group.append(add_fog(src_img, severity=1))
         target_group.append(cv2.resize(src_img, self._scale_size(src_h, src_w, 2), cv2.INTER_LINEAR))
         target_group.append(cv2.resize(src_img, self._scale_size(src_h, src_w, 3), cv2.INTER_LINEAR))
         target_group.append(cv2.resize(src_img, self._scale_size(src_h, src_w, 4), cv2.INTER_LINEAR))
+        target_group.append(add_fog(src_img, severity=1))
 
         if self.transform:
             return self.transform(src_img), [self.transform(tgt) for tgt in target_group]

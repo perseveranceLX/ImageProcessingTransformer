@@ -254,9 +254,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
+            model_to_save = getattr(model, "module", model)
             save_checkpoint({
                 'epoch': epoch + 1,
-                'state_dict': model.state_dict(),
+                'state_dict': model_to_save.state_dict(),
                 'optimizer' : optimizer.state_dict(),
             }, path=args.save_path)
 
@@ -328,10 +329,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                    epoch, i, batch_time=batch_time,
                    data_time=data_time, loss=losses, lr=local_lr))
 
-    '''
-    for i, (input, target, task_id) in enumerate(train_loader):
-        print("123")
-    '''
+
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter()
     losses = AverageMeter()

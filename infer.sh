@@ -1,1 +1,1 @@
-python inference.py --checkpoint /home/lizhexin/deit/ckpt/03-17-12_29_37/checkpoint.pth.tar
+CUDA_VISIBLE_DEVICES=7 python inference.py --checkpoint /home/lizhexin/deit/ckpt/03-17-12_29_37/checkpoint.pth.tar --dir ./test_data --out_dir ./results

@@ -9,3 +9,5 @@ logs/
 __pycache__/
 dataset/__pycache__/
 test_data
+.vscode/
+results

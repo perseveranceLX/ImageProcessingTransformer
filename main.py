@@ -329,8 +329,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'LR: {lr: .6f}'.format(
                    epoch, i, args.epoch_size, batch_time=batch_time,
                    data_time=data_time, loss=losses, lr=local_lr))
-        
-        exit()
 
 
 def validate(val_loader, model, criterion, args):

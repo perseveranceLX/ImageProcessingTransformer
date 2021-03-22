@@ -10,4 +10,4 @@ __pycache__/
 dataset/__pycache__/
 test_data
 .vscode/
-results
+results/

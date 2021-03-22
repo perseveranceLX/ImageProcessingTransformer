@@ -178,7 +178,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 args.start_epoch = checkpoint['epoch']
             #args.start_epoch = 10
             model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            #optimizer.load_state_dict(checkpoint['optimizer'])
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
         else:
@@ -219,7 +219,7 @@ def main_worker(gpu, ngpus_per_node, args):
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
 
     if args.eval:
-        raise RuntimeError("evaluate dataloader not implemented")
+        #raise RuntimeError("evaluate dataloader not implemented")
         validate(val_loader, model, criterion, args)
         return
     
@@ -257,11 +257,12 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model_to_save.state_dict(),
                 'optimizer' : optimizer.state_dict(),
             }, path=args.save_path)
+        
 
 task_map = {"denoise30": 0, "denoise50": 1, "SRx2": 2, "SRx3": 3, "SRx4": 4, "dehaze": 5}
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
-    #train for one epoch
+    # train for one epoch
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -303,6 +304,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute output
         output = model(input)
+        
 
         #print(output.device, target.device)
         loss = criterion(output, target.cuda())
@@ -327,16 +329,19 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'LR: {lr: .6f}'.format(
                    epoch, i, args.epoch_size, batch_time=batch_time,
                    data_time=data_time, loss=losses, lr=local_lr))
+        
+        exit()
 
 
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    psnrs = AverageMeter()
+    psnr_out = AverageMeter()
+    psnr_in = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
-
+    P = PSNR()
     with torch.no_grad():
         end = time.time()
         for i, (target, input_group) in enumerate(val_loader):
@@ -346,18 +351,19 @@ def validate(val_loader, model, criterion, args):
             if args.gpu is not None:
                 input = input.cuda(args.gpu, non_blocking=True)
                 target = target.cuda(args.gpu, non_blocking=True)
-            print(input.shape, target.shape)
-            print(input[0])
-            print(target[0])
-            return
+            target = target.cuda()
             # compute output
             output = model(input)
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            psnr = PSNR(output, target)
+            output = (output * 0.5 + 0.5) * 255.
+            target = (target * 0.5 + 0.5) * 255.
+            psnr1 = P(output, target)
+            # psnr2 = P(input.cuda(), target)
             losses.update(loss.item(), input.size(0))
-            psnrs.update(psnr.item(), input.size(0))
+            psnr_out.update(psnr1.item(), input.size(0))
+            # psnr_in.update(psnr2.item(), input.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -367,13 +373,15 @@ def validate(val_loader, model, criterion, args):
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'PSNR {psnr.val:.3f} ({psnr.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses, psnr=psnrs
+                      'PSNR_Out {psnr1.val:.3f} ({psnr1.avg:.3f})\t'
+                      'PSNR_In {psnr2.val:.3f} ({psnr2.avg:.3f})'.format(
+                       i, len(val_loader), batch_time=batch_time, loss=losses, psnr1=psnr_out, psnr2=psnr_in
                     ))
 
-        print(' * PSNR {psnr.val:.3f} ({psnr.avg:.3f})'.format(psnr=psnrs))
+        print(' * PSNR_Out {psnr1.val:.3f} ({psnr1.avg:.3f})\t'
+                 'PSNR_In {psnr2.val:.3f} ({psnr2.avg:.3f})'.format(psnr1=psnr_out, psnr2=psnr_in))
 
-    return psnrs.avg
+    return psnr_out.avg
 
 
 def save_checkpoint(state, path='./', filename='checkpoint'):
@@ -445,18 +453,65 @@ def adjust_learning_rate_cosine(optimizer, global_iter, args):
         param_group['lr'] = lr
     return lr
 
-def PSNR(output, target):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
-        batch_size = target.size(0)
+class PSNR:
+    """Peak Signal to Noise Ratio
+    img1 and img2 have range [0, 255]"""
 
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
+    def __init__(self):
+        self.name = "PSNR"
 
-        res = []
-        return res
+    @staticmethod
+    def __call__(img1, img2):
+        mse = torch.mean((img1 - img2) ** 2)
+        return 20 * torch.log10(255.0 / torch.sqrt(mse))
+'''
+class SSIM:
+    """Structure Similarity
+    img1, img2: [0, 255]"""
 
+    def __init__(self):
+        self.name = "SSIM"
 
+    @staticmethod
+    def __call__(img1, img2):
+        if not img1.shape == img2.shape:
+            raise ValueError("Input images must have the same dimensions.")
+        if img1.ndim == 2:  # Grey or Y-channel image
+            return self._ssim(img1, img2)
+        elif img1.ndim == 3:
+            if img1.shape[2] == 3:
+                ssims = []
+                for i in range(3):
+                    ssims.append(ssim(img1, img2))
+                return np.array(ssims).mean()
+            elif img1.shape[2] == 1:
+                return self._ssim(np.squeeze(img1), np.squeeze(img2))
+        else:
+            raise ValueError("Wrong input image dimensions.")
+
+    @staticmethod
+    def _ssim(img1, img2):
+        C1 = (0.01 * 255) ** 2
+        C2 = (0.03 * 255) ** 2
+
+        img1 = img1.astype(np.float64)
+        img2 = img2.astype(np.float64)
+        kernel = cv2.getGaussianKernel(11, 1.5)
+        window = np.outer(kernel, kernel.transpose())
+
+        mu1 = cv2.filter2D(img1, -1, window)[5:-5, 5:-5]  # valid
+        mu2 = cv2.filter2D(img2, -1, window)[5:-5, 5:-5]
+        mu1_sq = mu1 ** 2
+        mu2_sq = mu2 ** 2
+        mu1_mu2 = mu1 * mu2
+        sigma1_sq = cv2.filter2D(img1 ** 2, -1, window)[5:-5, 5:-5] - mu1_sq
+        sigma2_sq = cv2.filter2D(img2 ** 2, -1, window)[5:-5, 5:-5] - mu2_sq
+        sigma12 = cv2.filter2D(img1 * img2, -1, window)[5:-5, 5:-5] - mu1_mu2
+
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / (
+            (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+        )
+        return ssim_map.mean()
+'''
 if __name__ == '__main__':
     main()

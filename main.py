@@ -28,6 +28,8 @@ from datetime import datetime
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('-d','--data', metavar='DIR', default='./data',
                     help='path to dataset')
+parser.add_argument('--eval-data', metavar='DIR', default='./data',
+                    help='path to eval dataset')
 parser.add_argument('-s','--save-path', metavar='DIR', default='./ckpt',
                     help='path to save checkpoints')
 parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
@@ -43,7 +45,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--lr_policy', default='step',
+parser.add_argument('--lr-policy', default='step',
                     help='lr policy')
 parser.add_argument('--warmup-epochs', default=0, type=int, metavar='N',
                     help='number of warmup epochs')
@@ -60,10 +62,15 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--reset-epoch', action='store_true', 
+                    help='whether to reset epoch')
+parser.add_argument('--eval', action='store_true', 
+                    help='only do evaluation')         
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
-                    help='use pre-trained model')
+parser.add_argument('--task', default='', type=str, metavar='string',
+                    help='specific a task'
+                    '["denoise30", "denoise50", "SRx2", "SRx3", "SRx4", "dehaze"] (default: none)')
 parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
@@ -84,16 +91,17 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 
 best_acc1 = 0
 # set task sets
-tasksets = ["defog", "denoise", "SRx2", "SRx3", "SRx4"]
+
 
 def main():
     args = parser.parse_args()
 
     now = datetime.now()
     timestr = now.strftime("%m-%d-%H_%M_%S")
-
-    args.save_path = os.path.join(args.save_path, timestr)
+    args.save_path = os.path.join(args.save_path, f"{args.task}" if args.task else "train")
+    #args.save_path = os.path.join(args.save_path, timestr)
     save_path = args.save_path
+    
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -146,7 +154,37 @@ def main_worker(gpu, ngpus_per_node, args):
                                 world_size=args.world_size, rank=args.rank)
 
     print("=> creating model '{}'".format("ipt_base"))
-    model = ipt_base()
+    model = ipt_base().cuda()
+
+    
+
+    # define loss function (criterion) and optimizer
+
+    # IPT uses L1 loss function
+    #criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    criterion = nn.L1Loss()
+
+    optimizer = torch.optim.Adam(model.parameters(), args.lr,
+                                betas=(0.9, 0.999),
+                                weight_decay=args.weight_decay)
+
+
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            if not args.reset_epoch:
+                args.start_epoch = checkpoint['epoch']
+            #args.start_epoch = 10
+            model.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.resume, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
+
+    cudnn.benchmark = True
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -171,75 +209,34 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
         model = torch.nn.DataParallel(model).cuda()
-
-    # define loss function (criterion) and optimizer
-
-    # IPT uses L1 loss function
-    #criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-    criterion = nn.L1Loss()
-
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
-    
-
-
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            #args.start_epoch = checkpoint['epoch']
-            args.start_epoch = 10
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-
-    cudnn.benchmark = True
-
     input_size = 48
 
     # Data loading code
-    '''
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(input_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-    '''
-    root_dir = args.data
-
     trans = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                                 ])
-    dataset = ImageProcessDataset(root_dir, transform=trans)
-    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    val_dataset = ImageProcessDataset(args.eval_data, transform=trans)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
+
+    if args.eval:
+        raise RuntimeError("evaluate dataloader not implemented")
+        validate(val_loader, model, criterion, args)
+        return
+    
+    train_dataset = ImageProcessDataset(args.data, transform=trans)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
     args.epoch_size = len(train_loader)
     print(f"Each epoch contains {args.epoch_size} iterations")
+
+    print(f"Using {args.lr_policy} learning rate")
 
     if args.distributed:
         raise RuntimeError("distributed not implemented")
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
         train_sampler = None
-
-    if args.evaluate:
-        raise RuntimeError("evaluate dataloader not implemented")
-        validate(val_loader, model, criterion, args)
-        return
-
+    
     print(args)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -251,7 +248,7 @@ def main_worker(gpu, ngpus_per_node, args):
         # evaluate on validation set
         #acc1 = validate(val_loader, model, criterion, args)
 
-
+        
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
             model_to_save = getattr(model, "module", model)
@@ -261,6 +258,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'optimizer' : optimizer.state_dict(),
             }, path=args.save_path)
 
+task_map = {"denoise30": 0, "denoise50": 1, "SRx2": 2, "SRx3": 3, "SRx4": 4, "dehaze": 5}
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     #train for one epoch
@@ -278,10 +276,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     elif args.lr_policy == 'epoch_poly':
         local_lr = adjust_learning_rate_epoch_poly(optimizer, epoch, args)
         
-
+    
     for i, (target, input_group) in enumerate(train_loader):
+
         # set random task
-        task_id = random.randint(0, 5)
+        task_id = random.randint(0, 5) if not args.task else task_map[args.task]
         input = input_group[task_id]
         model.module.set_task(task_id)
         #print(f"Iter {i}, task_id: {task_id}")
@@ -321,40 +320,44 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         end = time.time()
 
         if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/random]\t'
+            print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'LR: {lr: .6f}'.format(
-                   epoch, i, batch_time=batch_time,
+                   epoch, i, args.epoch_size, batch_time=batch_time,
                    data_time=data_time, loss=losses, lr=local_lr))
 
 
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
+    psnrs = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     with torch.no_grad():
         end = time.time()
-        for i, (input, target) in enumerate(val_loader):
+        for i, (target, input_group) in enumerate(val_loader):
+            task_id = task_map[args.task]
+            input = input_group[task_id]
+            model.module.set_task(task_id)
             if args.gpu is not None:
                 input = input.cuda(args.gpu, non_blocking=True)
                 target = target.cuda(args.gpu, non_blocking=True)
-
+            print(input.shape, target.shape)
+            print(input[0])
+            print(target[0])
+            return
             # compute output
             output = model(input)
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            psnr = PSNR(output, target)
             losses.update(loss.item(), input.size(0))
-            top1.update(acc1[0], input.size(0))
-            top5.update(acc5[0], input.size(0))
+            psnrs.update(psnr.item(), input.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -364,15 +367,13 @@ def validate(val_loader, model, criterion, args):
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                      'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses,
-                       top1=top1, top5=top5))
+                      'PSNR {psnr.val:.3f} ({psnr.avg:.3f})'.format(
+                       i, len(val_loader), batch_time=batch_time, loss=losses, psnr=psnrs
+                    ))
 
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-              .format(top1=top1, top5=top5))
+        print(' * PSNR {psnr.val:.3f} ({psnr.avg:.3f})'.format(psnr=psnrs))
 
-    return top1.avg
+    return psnrs.avg
 
 
 def save_checkpoint(state, path='./', filename='checkpoint'):
@@ -444,10 +445,9 @@ def adjust_learning_rate_cosine(optimizer, global_iter, args):
         param_group['lr'] = lr
     return lr
 
-def accuracy(output, target, topk=(1,)):
+def PSNR(output, target):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
-        maxk = max(topk)
         batch_size = target.size(0)
 
         _, pred = output.topk(maxk, 1, True, True)
@@ -455,9 +455,6 @@ def accuracy(output, target, topk=(1,)):
         correct = pred.eq(target.view(1, -1).expand_as(pred))
 
         res = []
-        for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
         return res
 
 

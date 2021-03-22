@@ -27,8 +27,7 @@ from functools import partial
 
 from torch.nn.modules.activation import Tanhshrink
 
-from timm.models.helpers import load_pretrained
-from timm.models.layers import to_2tuple, trunc_normal_
+from timm.models.layers import trunc_normal_
 
 '''
 def _cfg(url='', **kwargs):
@@ -373,12 +372,9 @@ def _conv_filter(state_dict, patch_size=16):
         out_dict[k] = v
     return out_dict
 
-def ipt_base(pretrained=False, **kwargs):
+def ipt_base(**kwargs):
     model = ImageProcessingTransformer(
         patch_size=4, depth=12, num_heads=8, ffn_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-    #model.default_cfg = default_cfgs['vit_base_patch16_224']
-    if pretrained:
-        load_pretrained(
-            model, num_classes=model.num_classes, in_chans=kwargs.get('in_chans', 3), filter_fn=_conv_filter)
+
     return model

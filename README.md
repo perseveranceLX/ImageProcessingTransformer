@@ -2,15 +2,33 @@
 Third party Pytorch implement of Image Processing Transformer (Pre-Trained Image Processing Transformer arXiv:2012.00364v2)
 
 only contain model definition file and train/test file. Dataloader file if not yet released. 
+
 To pretrain on random task
 
-    CUDA_VISIBLE_DEVICES=0,1,2,3 python main.py --seed 0 \
-    --lr 4e-5 \
+    python main.py --seed 0 \
+    --lr 5e-5 \
+    --save-path "./ckpt" \
+    --epochs 300 \
+    --data path-to-data \
+    --batch-size 256
+
+To finetune on a specific task
+
+    python main.py --seed 0 \
+    --lr 2e-5 \
     --save-path "./ckpt" \
     --epochs 30 \
     --reset-epoch \
-    --data /data1/share/remote_sensing/patched_images/rgb_superview \
-    --batch-size 180 \
-    --resume /home/lizhexin/deit/ckpt/dehaze/checkpoint.pth.tar \
-    --task "dehaze" \
-    | tee ./logs/dehaze_bs320_lr2e-5_30epoch.log
+    --data path-to-data \
+    --batch-size 256 \
+    --resume path-to-pretrain-model \
+    --task "dehaze"
+    
+To eval on a specific task
+
+    python main.py --seed 0 \
+    --eval-data path-to-val-data \
+    --batch-size 256 \
+    --eval \
+    --resume path-to-model \
+    --task "dehaze"

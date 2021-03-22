@@ -62,7 +62,13 @@ class OverlapCrop():
             weight = np.expand_dims(weight, axis=2)
         result = np.zeros((h, w + patch_w - overlap, c))
         result[:, :w-overlap, :] = arr_l[:, :w-overlap, :]
-        tmp = arr_l[:, -overlap:, :] * (1-weight) + arr_r[:, :overlap, :] * weight
+        if overlap == 10:
+            weight = 0.5
+            tmp = arr_l[:, -overlap:, :] * (1-weight) + arr_r[:, :overlap, :] * weight
+        elif overlap == 0:
+            tmp = arr_r[:, :overlap, :]
+        else:
+            tmp = arr_l[:, -overlap:, :] * 0.5 + arr_r[:, :overlap, :] * 0.5
         # tmp = arr_l[:, -overlap:, :]
         # tmp = arr_r[:, :overlap, :]
         result[:, w-overlap:w, :] = tmp
@@ -80,7 +86,13 @@ class OverlapCrop():
             weight = np.expand_dims(weight, axis=2)
         result = np.zeros((h + pathch_h - overlap, w, c))
         result[:h-overlap, :, :] = arr_up[:h-overlap, :, :]
-        tmp = arr_up[-overlap:, :, :] * (1-weight) + arr_down[:overlap, :, :] * weight
+        if overlap == 10:
+            weight = 0.5
+            tmp = arr_up[-overlap:, :, :] * (1-weight) + arr_down[:overlap, :, :] * weight
+        elif overlap == 0:
+            tmp = arr_down[:overlap, :, :]
+        else:
+            tmp = arr_up[-overlap:, :, :] * 0.5 + arr_down[:overlap, :, :] * 0.5
         # tmp = arr_up[-overlap:, :, :]
         # tmp = arr_down[:overlap, :, :]
         result[h-overlap:h, :, :] = tmp
@@ -129,15 +141,16 @@ class OverlapCrop():
 
 if __name__ == "__main__":
     # img_path = "../test/female_281.jpg"
-    img_path = "../results/0_0_in.png"
+    img_path = "../results/0_0_out.png"
 
     img = cv2.imread(img_path)
-    input = OverlapCrop(img, patch_size=48, overlap=10)
+    input = OverlapCrop(img, patch_size=48, overlap=0)
     patches = input.unfold()
+    print(len(patches))
 
     
     out_img = np.zeros(img.shape)
-    output = OverlapCrop(out_img, patch_size=48, overlap=10)
+    output = OverlapCrop(out_img, patch_size=48, overlap=0)
     output.set_patches(patches)
     output.fold()
     out_img = output.get_image()

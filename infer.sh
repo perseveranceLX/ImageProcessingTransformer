@@ -1,1 +1,2 @@
-CUDA_VISIBLE_DEVICES=7 python inference.py --checkpoint /home/lizhexin/deit/ckpt/03-17-12_29_37/checkpoint.pth.tar --dir ./test_data --out_dir ./results
+# CUDA_VISIBLE_DEVICES=7 python inference.py --checkpoint /home/lizhexin/deit/ckpt/03-17-12_29_37/checkpoint.pth.tar --dir ./test_data --out_dir ./results_10_avg
+CUDA_VISIBLE_DEVICES=7 python infer_image.py --img results/0_0_in.png --out test_data/00.png --task_id 0 --checkpoint /home/lizhexin/deit/ckpt/03-17-12_29_37/checkpoint.pth.tar

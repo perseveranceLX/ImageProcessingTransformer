@@ -216,7 +216,6 @@ class PatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.dim = self.patch_size ** 2 * in_channels
 
-
     def forward(self, x):
         N, C, H, W = ori_shape = x.shape
         
@@ -243,7 +242,6 @@ class DePatchEmbed(nn.Module):
         self.patch_size = patch_size
         self.num_patches = None
         self.dim = self.patch_size ** 2 * in_channels
-
 
     def forward(self, x, ori_shape):
         N, num_patches, dim = x.shape

@@ -94,7 +94,7 @@ def test(test_loader, model, device, result_dir):
             cv2.imwrite(path_out, out_img)
             cv2.imwrite(path_in, src)
 
-        # break
+        break
 
 def main():
     args = parser.parse_args()

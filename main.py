@@ -9,12 +9,14 @@ import math
 import random
 
 import torch
+from torch.cuda.amp.autocast_mode import autocast
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.optim
 import torch.multiprocessing as mp
+import torch.cuda.amp as amp
 import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
@@ -28,6 +30,8 @@ from datetime import datetime
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('-d','--data', metavar='DIR', default='./data',
                     help='path to dataset')
+parser.add_argument('--eval-data', metavar='DIR', default='./data',
+                    help='path to eval dataset')
 parser.add_argument('-s','--save-path', metavar='DIR', default='./ckpt',
                     help='path to save checkpoints')
 parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
@@ -43,7 +47,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--lr_policy', default='step',
+parser.add_argument('--lr-policy', default='step',
                     help='lr policy')
 parser.add_argument('--warmup-epochs', default=0, type=int, metavar='N',
                     help='number of warmup epochs')
@@ -60,10 +64,15 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
 parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
+parser.add_argument('--reset-epoch', action='store_true', 
+                    help='whether to reset epoch')
+parser.add_argument('--eval', action='store_true', 
+                    help='only do evaluation')         
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
-parser.add_argument('--pretrained', dest='pretrained', action='store_true',
-                    help='use pre-trained model')
+parser.add_argument('--task', default='', type=str, metavar='string',
+                    help='specific a task'
+                    '["denoise30", "denoise50", "SRx2", "SRx3", "SRx4", "dehaze"] (default: none)')
 parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
@@ -81,19 +90,23 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
+parser.add_argument('--fp16',action='store_true', default=False, help="\
+                    use fp16 instead of fp32.")
+
 
 best_acc1 = 0
 # set task sets
-tasksets = ["defog", "denoise", "SRx2", "SRx3", "SRx4"]
+
 
 def main():
     args = parser.parse_args()
 
     now = datetime.now()
     timestr = now.strftime("%m-%d-%H_%M_%S")
-
-    args.save_path = os.path.join(args.save_path, timestr)
+    args.save_path = os.path.join(args.save_path, f"{args.task}" if args.task else "train")
+    #args.save_path = os.path.join(args.save_path, timestr)
     save_path = args.save_path
+    
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -146,7 +159,36 @@ def main_worker(gpu, ngpus_per_node, args):
                                 world_size=args.world_size, rank=args.rank)
 
     print("=> creating model '{}'".format("ipt_base"))
-    model = ipt_base()
+    model = ipt_base().cuda()
+
+
+
+    # define loss function (criterion) and optimizer
+
+    # IPT uses L1 loss function
+    #criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    criterion = nn.L1Loss()
+
+    optimizer = torch.optim.Adam(model.parameters(), args.lr,
+                                betas=(0.9, 0.999),
+                                weight_decay=args.weight_decay)
+
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            print("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            if not args.reset_epoch:
+                args.start_epoch = checkpoint['epoch']
+            #args.start_epoch = 10
+            model.load_state_dict(checkpoint['state_dict'])
+            #optimizer.load_state_dict(checkpoint['optimizer'])
+            print("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.resume, checkpoint['epoch']))
+        else:
+            print("=> no checkpoint found at '{}'".format(args.resume))
+
+    cudnn.benchmark = True
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -171,63 +213,27 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
         model = torch.nn.DataParallel(model).cuda()
-
-    # define loss function (criterion) and optimizer
-
-    # IPT uses L1 loss function
-    #criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-    criterion = nn.L1Loss()
-
-    optimizer = torch.optim.SGD(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
-    
-
-
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            #args.start_epoch = checkpoint['epoch']
-            args.start_epoch = 10
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-
-    cudnn.benchmark = True
-
     input_size = 48
 
     # Data loading code
-    '''
-    traindir = os.path.join(args.data, 'train')
-    valdir = os.path.join(args.data, 'val')
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
-
-    train_dataset = datasets.ImageFolder(
-        traindir,
-        transforms.Compose([
-            transforms.RandomResizedCrop(input_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
-    '''
-    root_dir = args.data
-
     trans = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                                 ])
-    dataset = ImageProcessDataset(root_dir, transform=trans)
-    train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
+    val_dataset = ImageProcessDataset(args.eval_data, transform=trans)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
+
+    if args.eval:
+        #raise RuntimeError("evaluate dataloader not implemented")
+        validate(val_loader, model, criterion, args)
+        return
+    
+    train_dataset = ImageProcessDataset(args.data, transform=trans)
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=16)
 
     args.epoch_size = len(train_loader)
     print(f"Each epoch contains {args.epoch_size} iterations")
+
+    print(f"Using {args.lr_policy} learning rate")
 
     if args.distributed:
         raise RuntimeError("distributed not implemented")
@@ -235,23 +241,19 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         train_sampler = None
 
-    if args.evaluate:
-        raise RuntimeError("evaluate dataloader not implemented")
-        validate(val_loader, model, criterion, args)
-        return
-
+    scaler = amp.GradScaler() if args.fp16 else None
     print(args)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         # adjust_learning_rate(optimizer, epoch, args)
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        train(train_loader, model, criterion, optimizer, epoch, args, scaler)
 
         # evaluate on validation set
         #acc1 = validate(val_loader, model, criterion, args)
 
-
+        
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
                 and args.rank % ngpus_per_node == 0):
             model_to_save = getattr(model, "module", model)
@@ -260,10 +262,12 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model_to_save.state_dict(),
                 'optimizer' : optimizer.state_dict(),
             }, path=args.save_path)
+        
 
+task_map = {"denoise30": 0, "denoise50": 1, "SRx2": 2, "SRx3": 3, "SRx4": 4, "dehaze": 5}
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
-    #train for one epoch
+def train(train_loader, model, criterion, optimizer, epoch, args, scaler=None):
+    # train for one epoch
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -278,10 +282,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     elif args.lr_policy == 'epoch_poly':
         local_lr = adjust_learning_rate_epoch_poly(optimizer, epoch, args)
         
-
+    
     for i, (target, input_group) in enumerate(train_loader):
+
         # set random task
-        task_id = random.randint(0, 5)
+        task_id = random.randint(0, 5) if not args.task else task_map[args.task]
         input = input_group[task_id]
         model.module.set_task(task_id)
         #print(f"Iter {i}, task_id: {task_id}")
@@ -302,59 +307,76 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             input = input.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
 
-        # compute output
-        output = model(input)
-
-        #print(output.device, target.device)
-        loss = criterion(output, target.cuda())
+        if scaler is None:
+            # compute output
+            output = model(input)
+            #print(output.device, target.device)
+            loss = criterion(output, target.cuda())
+        else:
+            with autocast():
+                # compute output
+                output = model(input)
+                #print(output.device, target.device)
+                loss = criterion(output, target.cuda())
 
         # measure accuracy and record loss
         losses.update(loss.item(), input.size(0))
-
-        # compute gradient and do SGD step
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+
+        if scaler is None:
+            # compute gradient and do SGD step
+            loss.backward()
+            optimizer.step()
+        else:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
         end = time.time()
 
         if i % args.print_freq == 0:
-            print('Epoch: [{0}][{1}/random]\t'
+            print('Epoch: [{0}][{1}/{2}]\t'
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'LR: {lr: .6f}'.format(
-                   epoch, i, batch_time=batch_time,
+                   epoch, i, args.epoch_size, batch_time=batch_time,
                    data_time=data_time, loss=losses, lr=local_lr))
 
 
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter()
     losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
+    psnr_out = AverageMeter()
+    psnr_in = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
-
+    P = PSNR()
     with torch.no_grad():
         end = time.time()
-        for i, (input, target) in enumerate(val_loader):
+        for i, (target, input_group) in enumerate(val_loader):
+            task_id = task_map[args.task]
+            input = input_group[task_id]
+            model.module.set_task(task_id)
             if args.gpu is not None:
                 input = input.cuda(args.gpu, non_blocking=True)
                 target = target.cuda(args.gpu, non_blocking=True)
-
+            target = target.cuda()
             # compute output
             output = model(input)
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            output = (output * 0.5 + 0.5) * 255.
+            target = (target * 0.5 + 0.5) * 255.
+            psnr1 = P(output, target)
+            # psnr2 = P(input.cuda(), target)
             losses.update(loss.item(), input.size(0))
-            top1.update(acc1[0], input.size(0))
-            top5.update(acc5[0], input.size(0))
+            psnr_out.update(psnr1.item(), input.size(0))
+            # psnr_in.update(psnr2.item(), input.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -364,15 +386,15 @@ def validate(val_loader, model, criterion, args):
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                      'Acc@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                       i, len(val_loader), batch_time=batch_time, loss=losses,
-                       top1=top1, top5=top5))
+                      'PSNR_Out {psnr1.val:.3f} ({psnr1.avg:.3f})\t'
+                      'PSNR_In {psnr2.val:.3f} ({psnr2.avg:.3f})'.format(
+                       i, len(val_loader), batch_time=batch_time, loss=losses, psnr1=psnr_out, psnr2=psnr_in
+                    ))
 
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-              .format(top1=top1, top5=top5))
+        print(' * PSNR_Out {psnr1.val:.3f} ({psnr1.avg:.3f})\t'
+                 'PSNR_In {psnr2.val:.3f} ({psnr2.avg:.3f})'.format(psnr1=psnr_out, psnr2=psnr_in))
 
-    return top1.avg
+    return psnr_out.avg
 
 
 def save_checkpoint(state, path='./', filename='checkpoint'):
@@ -444,22 +466,65 @@ def adjust_learning_rate_cosine(optimizer, global_iter, args):
         param_group['lr'] = lr
     return lr
 
-def accuracy(output, target, topk=(1,)):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
-        maxk = max(topk)
-        batch_size = target.size(0)
+class PSNR:
+    """Peak Signal to Noise Ratio
+    img1 and img2 have range [0, 255]"""
 
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
+    def __init__(self):
+        self.name = "PSNR"
 
-        res = []
-        for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
-        return res
+    @staticmethod
+    def __call__(img1, img2):
+        mse = torch.mean((img1 - img2) ** 2)
+        return 20 * torch.log10(255.0 / torch.sqrt(mse))
+'''
+class SSIM:
+    """Structure Similarity
+    img1, img2: [0, 255]"""
 
+    def __init__(self):
+        self.name = "SSIM"
 
+    @staticmethod
+    def __call__(img1, img2):
+        if not img1.shape == img2.shape:
+            raise ValueError("Input images must have the same dimensions.")
+        if img1.ndim == 2:  # Grey or Y-channel image
+            return self._ssim(img1, img2)
+        elif img1.ndim == 3:
+            if img1.shape[2] == 3:
+                ssims = []
+                for i in range(3):
+                    ssims.append(ssim(img1, img2))
+                return np.array(ssims).mean()
+            elif img1.shape[2] == 1:
+                return self._ssim(np.squeeze(img1), np.squeeze(img2))
+        else:
+            raise ValueError("Wrong input image dimensions.")
+
+    @staticmethod
+    def _ssim(img1, img2):
+        C1 = (0.01 * 255) ** 2
+        C2 = (0.03 * 255) ** 2
+
+        img1 = img1.astype(np.float64)
+        img2 = img2.astype(np.float64)
+        kernel = cv2.getGaussianKernel(11, 1.5)
+        window = np.outer(kernel, kernel.transpose())
+
+        mu1 = cv2.filter2D(img1, -1, window)[5:-5, 5:-5]  # valid
+        mu2 = cv2.filter2D(img2, -1, window)[5:-5, 5:-5]
+        mu1_sq = mu1 ** 2
+        mu2_sq = mu2 ** 2
+        mu1_mu2 = mu1 * mu2
+        sigma1_sq = cv2.filter2D(img1 ** 2, -1, window)[5:-5, 5:-5] - mu1_sq
+        sigma2_sq = cv2.filter2D(img2 ** 2, -1, window)[5:-5, 5:-5] - mu2_sq
+        sigma12 = cv2.filter2D(img1 * img2, -1, window)[5:-5, 5:-5] - mu1_mu2
+
+        ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / (
+            (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+        )
+        return ssim_map.mean()
+'''
 if __name__ == '__main__':
     main()

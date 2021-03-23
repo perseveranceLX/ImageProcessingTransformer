@@ -212,13 +212,13 @@ def main_worker(gpu, ngpus_per_node, args):
     input_size = 48
 
     # Data loading code
+    
     trans = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                                 ])
-    val_dataset = ImageProcessDataset(args.eval_data, transform=trans)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
-
     if args.eval:
+        val_dataset = ImageProcessDataset(args.eval_data, transform=trans)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
         #raise RuntimeError("evaluate dataloader not implemented")
         validate(val_loader, model, criterion, args)
         return
@@ -246,7 +246,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        #acc1 = validate(val_loader, model, criterion, args)
+        # validate(val_loader, model, criterion, args)
 
         
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
@@ -266,6 +266,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    psnr_out = AverageMeter()
 
     # switch to train mode
     model.train()
@@ -305,12 +306,16 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         # compute output
         output = model(input)
         
-
         #print(output.device, target.device)
-        loss = criterion(output, target.cuda())
+        target = target.cuda()
+        loss = criterion(output, target)
 
         # measure accuracy and record loss
+        output = (output * 0.5 + 0.5) * 255.
+        target = (target * 0.5 + 0.5) * 255.
+        psnr = PSNR()(output, target)
         losses.update(loss.item(), input.size(0))
+        psnr_out.update(psnr.item(), input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -326,9 +331,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'PSNR {psnr.val:.3f} ({psnr.avg:.3f})\t'
                   'LR: {lr: .6f}'.format(
                    epoch, i, args.epoch_size, batch_time=batch_time,
-                   data_time=data_time, loss=losses, lr=local_lr))
+                   data_time=data_time, loss=losses, psnr=psnr_out, lr=local_lr))
 
 
 def validate(val_loader, model, criterion, args):

@@ -43,15 +43,19 @@ def test(test_loader, model, device, result_dir):
             if task_id in [0, 1, 5]:
                 patch_size = 48
                 overlap = 10
+                # overlap = 0
             elif task_id == 2:
                 patch_size = 24
                 overlap = 5
+                # overlap = 0
             elif task_id == 3:
                 patch_size = 16
                 overlap = 4
+                # overlap = 0
             elif task_id == 4:
                 patch_size = 12
                 overlap = 3
+                # overlap = 0
 
             cropper = OverlapCrop(src, overlap=overlap, patch_size=patch_size)
             src_patches = cropper.unfold()
@@ -75,7 +79,8 @@ def test(test_loader, model, device, result_dir):
                 patch = np.array(out).transpose(1, 2, 0)
                 out_patches.append(patch)
 
-            folder = OverlapCrop(tgt)
+            # pdb.set_trace()
+            folder = OverlapCrop(tgt, patch_size=48, overlap=10)
             folder.set_patches(out_patches)
             out_img = folder.fold()
             out_img = (out_img * 0.5 + 0.5) * 255.

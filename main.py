@@ -9,12 +9,14 @@ import math
 import random
 
 import torch
+from torch.cuda.amp.autocast_mode import autocast
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.optim
 import torch.multiprocessing as mp
+import torch.cuda.amp as amp
 import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
@@ -88,6 +90,9 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
+parser.add_argument('--fp16',action='store_true', default=False, help="\
+                    use fp16 instead of fp32.")
+
 
 best_acc1 = 0
 # set task sets
@@ -156,7 +161,7 @@ def main_worker(gpu, ngpus_per_node, args):
     print("=> creating model '{}'".format("ipt_base"))
     model = ipt_base().cuda()
 
-    
+
 
     # define loss function (criterion) and optimizer
 
@@ -167,7 +172,6 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.Adam(model.parameters(), args.lr,
                                 betas=(0.9, 0.999),
                                 weight_decay=args.weight_decay)
-
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -236,14 +240,15 @@ def main_worker(gpu, ngpus_per_node, args):
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
         train_sampler = None
-    
+
+    scaler = amp.GradScaler() if args.fp16 else None
     print(args)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         # adjust_learning_rate(optimizer, epoch, args)
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        train(train_loader, model, criterion, optimizer, epoch, args, scaler)
 
         # evaluate on validation set
         # validate(val_loader, model, criterion, args)
@@ -261,7 +266,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
 task_map = {"denoise30": 0, "denoise50": 1, "SRx2": 2, "SRx3": 3, "SRx4": 4, "dehaze": 5}
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def train(train_loader, model, criterion, optimizer, epoch, args, scaler=None):
     # train for one epoch
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -303,12 +308,18 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             input = input.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
 
-        # compute output
-        output = model(input)
-        
-        #print(output.device, target.device)
         target = target.cuda()
-        loss = criterion(output, target)
+        if scaler is None:
+            # compute output
+            output = model(input)
+            #print(output.device, target.device)
+            loss = criterion(output, target)
+        else:
+            with autocast():
+                # compute output
+                output = model(input)
+                #print(output.device, target.device)
+                loss = criterion(output, target)
 
         # measure accuracy and record loss
         output = (output * 0.5 + 0.5) * 255.
@@ -319,8 +330,15 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+
+        if scaler is None:
+            # compute gradient and do SGD step
+            loss.backward()
+            optimizer.step()
+        else:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         # measure elapsed time
         batch_time.update(time.time() - end)

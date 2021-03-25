@@ -24,45 +24,20 @@ import torch
 from torch.functional import Tensor
 import torch.nn as nn
 from functools import partial
-
-from torch.nn.modules.activation import Tanhshrink
-
-from timm.models.layers import trunc_normal_
-
-'''
-def _cfg(url='', **kwargs):
-    return {
-        'url': url,
-        'num_classes': 1000, 'input_size': (3, 224, 224), 'pool_size': None,
-        'crop_pct': .9, 'interpolation': 'bicubic',
-        'mean': IMAGENET_DEFAULT_MEAN, 'std': IMAGENET_DEFAULT_STD,
-        'first_conv': 'patch_embed.proj', 'classifier': 'head',
-        **kwargs
-    }
+import math
+import warnings
 
 
-default_cfgs = {
-    # patch models
-    'vit_base_patch16_224': _cfg(
-        url='https://github.com/rwightman/pytorch-image-models/releases/download/v0.1-vitjx/jx_vit_base_p16_224-80ecf9dd.pth',
-        mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
-    ),
-    # hybrid models
-    'vit_small_resnet26d_224': _cfg(),
-    'vit_small_resnet50d_s3_224': _cfg(),
-    'vit_base_resnet26d_224': _cfg(),
-    'vit_base_resnet50d_224': _cfg(),
-}
-'''
+
 
 class Ffn(nn.Module):
     # feed forward network layer after attention
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.ReLU, drop=0.):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
+        self.act = act_layer(inplace=True)
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
 
@@ -74,7 +49,6 @@ class Ffn(nn.Module):
         x = self.drop(x)
         return x
 
-
 class Attention(nn.Module):
     def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
         super().__init__()
@@ -83,25 +57,19 @@ class Attention(nn.Module):
         # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale or head_dim ** -0.5
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.query = nn.Linear(dim, dim, bias=qkv_bias)
+        self.key = nn.Linear(dim, dim, bias=qkv_bias)
+        self.value = nn.Linear(dim, dim, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x, task_embed=None, level=0):
-        N, L, D = x.shape
-        qkv = self.qkv(x).reshape(N, L, 3, self.num_heads, D // self.num_heads).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]   # make torchscript happy (cannot use tensor as tuple)
-
-        # for decoder's task_embedding of different levels of attention layers
-        if task_embed != None:
-            _N, _H, _L, _D = q.shape
-            task_embed = task_embed.reshape(1, _H, _L, _D)
-            if level == 1:
-                q += task_embed
-                k += task_embed
-            if level == 2:
-                q += task_embed
+    def forward(self, q, k, v):
+        N, L, D = q.shape
+        q, k, v = self.query(q), self.key(k), self.value(v)
+        q = q.reshape(N, L, self.num_heads, D // self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(N, L, self.num_heads, D // self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(N, L, self.num_heads, D // self.num_heads).permute(0, 2, 1, 3)
 
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
@@ -116,7 +84,7 @@ class Attention(nn.Module):
 class EncoderLayer(nn.Module):
 
     def __init__(self, dim, num_heads, ffn_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+                 act_layer=nn.ReLU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn = Attention(
@@ -127,15 +95,17 @@ class EncoderLayer(nn.Module):
         ffn_hidden_dim = int(dim * ffn_ratio)
         self.ffn = Ffn(in_features=dim, hidden_features=ffn_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+    def forward(self, x, pos):
+        x = self.norm1(x)
+        q, k, v = x + pos, x + pos, x
+        x = x + self.attn(q, k, v)
         x = x + self.ffn(self.norm2(x))
         return x
 
 class DecoderLayer(nn.Module):
     
     def __init__(self, dim, num_heads, ffn_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+                 act_layer=nn.ReLU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.norm1 = norm_layer(dim)
         self.attn1 = Attention(
@@ -149,9 +119,14 @@ class DecoderLayer(nn.Module):
         ffn_hidden_dim = int(dim * ffn_ratio)
         self.ffn = Ffn(in_features=dim, hidden_features=ffn_hidden_dim, act_layer=act_layer, drop=drop)
 
-    def forward(self, x, task_embed):
-        x = x + self.attn1(self.norm1(x), task_embed=task_embed, level=1)
-        x = x + self.attn2(self.norm2(x), task_embed=task_embed, level=2)
+    def forward(self, x, pos, task_embed):
+        memory = x
+        x = self.norm1(x)
+        q, k, v = x + task_embed, x + task_embed, x
+        x = x + self.attn1(q, k, v)
+        x = self.norm2(x)
+        q, k, v = x + task_embed, memory + pos, memory
+        x = x + self.attn2(q, k, v)
         x = x + self.ffn(self.norm3(x))
         return x
 
@@ -162,24 +137,24 @@ class ResBlock(nn.Module):
         super(ResBlock, self).__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=5, stride=1,
                      padding=2, bias=False)
-        self.bn1 = nn.BatchNorm2d(channels)
+        # self.bn1 = nn.BatchNorm2d(channels)
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=5, stride=1,
                      padding=2, bias=False)
-        self.bn2 = nn.BatchNorm2d(channels)
+        # self.bn2 = nn.BatchNorm2d(channels)
 
     def forward(self, x):
         residual = x
 
         out = self.conv1(x)
-        out = self.bn1(out)
+        # out = self.bn1(out)
         out = self.relu(out)
 
         out = self.conv2(out)
-        out = self.bn2(out)
+        # out = self.bn2(out)
 
         out += residual
-        out = self.relu(out)
+        # out = self.relu(out)
 
         return out
 
@@ -187,21 +162,22 @@ class Head(nn.Module):
     """ Head consisting of convolution layers
     Extract features from corrupted images, mapping N3HW images into NCHW feature map.
     """
-    def __init__(self, in_channels, out_channels, task_id):
+    def __init__(self, in_channels, out_channels):
         super(Head, self).__init__()
-        assert 0 <= task_id <= 5 
         self.conv1= nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1,
                      padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels) if task_id in [0, 1, 5] else nn.Identity()
-        self.relu = nn.ReLU(inplace=True)
-        self.resblock = ResBlock(out_channels)
+        # self.bn1 = nn.BatchNorm2d(out_channels) if task_id in [0, 1, 5] else nn.Identity()
+        # self.relu = nn.ReLU(inplace=True)
+        self.resblock1 = ResBlock(out_channels)
+        self.resblock2 = ResBlock(out_channels)
 
     def forward(self, x):
         out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
+        # out = self.bn1(out)
+        # out = self.relu(out)
 
-        out = self.resblock(out)
+        out = self.resblock1(out)
+        out = self.resblock2(out)
 
         return out
 
@@ -259,38 +235,37 @@ class DePatchEmbed(nn.Module):
 
 
 class Tail(nn.Module):
-    """ Head consisting of convolution layers
-    Extract features from corrupted images, mapping N3HW images into NCHW feature map.
+    """ Tail consisting of convolution layers and pixel shuffle layers
+    NCHW -> N3HW.
     """
     def __init__(self, task_id, in_channels, out_channels):
         super(Tail, self).__init__()
         assert 0 <= task_id <= 5
-        self.task_id = task_id
         # 0, 1 for noise 30, 50; 2, 3, 4 for sr x2, x3, x4, 5 for defog
-        if task_id in [0, 1, 5]:
-            self.output = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1,
-                     padding=1, bias=False)
-        elif task_id in [2, 3]:
-            self.output = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels * task_id * task_id, kernel_size=1, stride=1, padding=0, bias=False),
-                nn.PixelShuffle(task_id),
-            )
-        elif task_id == 4:
-            self.output = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels * task_id * task_id, kernel_size=1, stride=1, padding=0, bias=False),
-                nn.PixelShuffle(2),
-                nn.PixelShuffle(2),
-            )
-        else:
-            raise TypeError("Undefined task id")
-        
-        self.bn1 = nn.BatchNorm2d(out_channels) if task_id in [0, 1, 5] else nn.Identity()
+        upscale_map = [1, 1, 2, 3, 4, 1]
+        scale = upscale_map[task_id]
+        m = []
+        # for SR task
+        if scale > 1:
+            m.append(nn.Conv2d(in_channels, in_channels * scale * scale, kernel_size=3, stride=1,
+                     padding=1, bias=False))
+            if (scale & (scale - 1)) == 0:
+                for _ in range(int(math.log(scale, 2))):
+                    m.append(nn.PixelShuffle(2))
+            elif scale == 3:
+                m.append(nn.PixelShuffle(3))
+            else:
+                raise NameError("Only support x3 and x2^n SR")
+
+        m.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1,
+                     padding=1, bias=False))
+        self.m = nn.Sequential(*m)
         
     def forward(self, x):
-        out = self.output(x)
+        out = self.m(x)
         #print("task_id:", self.task_id)
         #print("shape of tail's output:", x.shape)
-        out = self.bn1(out)
+        # out = self.bn1(out)
         return out
 
 class ImageProcessingTransformer(nn.Module):
@@ -304,7 +279,7 @@ class ImageProcessingTransformer(nn.Module):
         self.task_id = None
         self.num_classes = num_classes
         self.embed_dim = patch_size * patch_size * mid_channels
-        self.headsets = nn.ModuleList([Head(in_channels, mid_channels, task_id) for task_id in range(6)])
+        self.headsets = nn.ModuleList([Head(in_channels, mid_channels) for _ in range(6)])
         self.patch_embedding = PatchEmbed(patch_size=patch_size, in_channels=mid_channels)
         self.embed_dim = self.patch_embedding.dim
         if self.embed_dim % num_heads != 0:
@@ -345,36 +320,80 @@ class ImageProcessingTransformer(nn.Module):
 
     def forward(self, x):
         assert 0 <= self.task_id <= 5
-        #print("input shape:", x.shape, x.device)
+        # print("input shape:", x.shape, x.device)
         x = self.headsets[self.task_id](x)
         x, ori_shape = self.patch_embedding(x)
-        #print("embedding shape:", x.shape)
+        # print("embedding shape:", x.shape)
         # print(x.device, self.pos_embed.device)
-        x = x + self.pos_embed[:, :x.shape[1]]
-
-
         for blk in self.encoder:
-            x = blk(x)
+            x = blk(x, self.pos_embed[:, :x.shape[1]])
         for blk in self.decoder:
-            x = blk(x, self.task_embed[self.task_id, :, :x.shape[1]])
+            x = blk(x, self.pos_embed[:, :x.shape[1]], self.task_embed[self.task_id, :, :x.shape[1]])
         x = self.de_patch_embedding(x, ori_shape)
         x = self.tailsets[self.task_id](x)
         #x = self.norm(x)
         return x
 
 
-def _conv_filter(state_dict, patch_size=16):
-    """ convert patch embedding weight from manual patchify + linear proj to conv"""
-    out_dict = {}
-    for k, v in state_dict.items():
-        if 'patch_embed.proj.weight' in k:
-            v = v.reshape((v.shape[0], 3, patch_size, patch_size))
-        out_dict[k] = v
-    return out_dict
+def _no_grad_trunc_normal_(tensor, mean, std, a, b):
+    # Cut & paste from PyTorch official master until it's in a few official releases - RW
+    # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
+    def norm_cdf(x):
+        # Computes standard normal cumulative distribution function
+        return (1. + math.erf(x / math.sqrt(2.))) / 2.
+
+    if (mean < a - 2 * std) or (mean > b + 2 * std):
+        warnings.warn("mean is more than 2 std from [a, b] in nn.init.trunc_normal_. "
+                      "The distribution of values may be incorrect.",
+                      stacklevel=2)
+
+    with torch.no_grad():
+        # Values are generated by using a truncated uniform distribution and
+        # then using the inverse CDF for the normal distribution.
+        # Get upper and lower cdf values
+        l = norm_cdf((a - mean) / std)
+        u = norm_cdf((b - mean) / std)
+
+        # Uniformly fill tensor with values from [l, u], then translate to
+        # [2l-1, 2u-1].
+        tensor.uniform_(2 * l - 1, 2 * u - 1)
+
+        # Use inverse cdf transform for normal distribution to get truncated
+        # standard normal
+        tensor.erfinv_()
+
+        # Transform to proper mean, std
+        tensor.mul_(std * math.sqrt(2.))
+        tensor.add_(mean)
+
+        # Clamp to ensure it's in the proper range
+        tensor.clamp_(min=a, max=b)
+        return tensor
+
+def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
+    # type: (Tensor, float, float, float, float) -> Tensor
+    r"""Fills the input Tensor with values drawn from a truncated
+    normal distribution. The values are effectively drawn from the
+    normal distribution :math:`\mathcal{N}(\text{mean}, \text{std}^2)`
+    with values outside :math:`[a, b]` redrawn until they are within
+    the bounds. The method used for generating the random values works
+    best when :math:`a \leq \text{mean} \leq b`.
+    Args:
+        tensor: an n-dimensional `torch.Tensor`
+        mean: the mean of the normal distribution
+        std: the standard deviation of the normal distribution
+        a: the minimum cutoff value
+        b: the maximum cutoff value
+    Examples:
+        >>> w = torch.empty(3, 5)
+        >>> nn.init.trunc_normal_(w)
+    """
+    return _no_grad_trunc_normal_(tensor, mean, std, a, b)
+
 
 def ipt_base(**kwargs):
     model = ImageProcessingTransformer(
         patch_size=4, depth=12, num_heads=8, ffn_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
-
     return model
+

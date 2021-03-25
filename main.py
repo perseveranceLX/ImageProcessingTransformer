@@ -9,12 +9,14 @@ import math
 import random
 
 import torch
+from torch.cuda.amp.autocast_mode import autocast
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.optim
 import torch.multiprocessing as mp
+import torch.cuda.amp as amp
 import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
@@ -45,7 +47,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--lr-policy', default='step',
+parser.add_argument('--lr-policy', default='naive',
                     help='lr policy')
 parser.add_argument('--warmup-epochs', default=0, type=int, metavar='N',
                     help='number of warmup epochs')
@@ -88,6 +90,9 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
+parser.add_argument('--fp16',action='store_true', default=False, help="\
+                    use fp16 instead of fp32.")
+
 
 best_acc1 = 0
 # set task sets
@@ -156,7 +161,7 @@ def main_worker(gpu, ngpus_per_node, args):
     print("=> creating model '{}'".format("ipt_base"))
     model = ipt_base().cuda()
 
-    
+
 
     # define loss function (criterion) and optimizer
 
@@ -167,7 +172,6 @@ def main_worker(gpu, ngpus_per_node, args):
     optimizer = torch.optim.Adam(model.parameters(), args.lr,
                                 betas=(0.9, 0.999),
                                 weight_decay=args.weight_decay)
-
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -212,13 +216,13 @@ def main_worker(gpu, ngpus_per_node, args):
     input_size = 48
 
     # Data loading code
+    
     trans = transforms.Compose([transforms.ToTensor(),
                                 transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
                                 ])
-    val_dataset = ImageProcessDataset(args.eval_data, transform=trans)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
-
     if args.eval:
+        val_dataset = ImageProcessDataset(args.eval_data, transform=trans)
+        val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=16)
         #raise RuntimeError("evaluate dataloader not implemented")
         validate(val_loader, model, criterion, args)
         return
@@ -236,17 +240,18 @@ def main_worker(gpu, ngpus_per_node, args):
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     else:
         train_sampler = None
-    
+
+    scaler = amp.GradScaler() if args.fp16 else None
     print(args)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         # adjust_learning_rate(optimizer, epoch, args)
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args)
+        train(train_loader, model, criterion, optimizer, epoch, args, scaler)
 
         # evaluate on validation set
-        #acc1 = validate(val_loader, model, criterion, args)
+        # validate(val_loader, model, criterion, args)
 
         
         if not args.multiprocessing_distributed or (args.multiprocessing_distributed
@@ -261,18 +266,21 @@ def main_worker(gpu, ngpus_per_node, args):
 
 task_map = {"denoise30": 0, "denoise50": 1, "SRx2": 2, "SRx3": 3, "SRx4": 4, "dehaze": 5}
 
-def train(train_loader, model, criterion, optimizer, epoch, args):
+def train(train_loader, model, criterion, optimizer, epoch, args, scaler=None):
     # train for one epoch
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
+    psnr_out = AverageMeter()
 
     # switch to train mode
     model.train()
 
     end = time.time()
 
-    if args.lr_policy == 'step':
+    if args.lr_policy == 'naive':
+        local_lr = adjust_learning_rate_naive(optimizer, epoch, args)
+    elif args.lr_policy == 'step':
         local_lr = adjust_learning_rate(optimizer, epoch, args)
     elif args.lr_policy == 'epoch_poly':
         local_lr = adjust_learning_rate_epoch_poly(optimizer, epoch, args)
@@ -302,20 +310,37 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             input = input.cuda(args.gpu, non_blocking=True)
             target = target.cuda(args.gpu, non_blocking=True)
 
-        # compute output
-        output = model(input)
-        
-
-        #print(output.device, target.device)
-        loss = criterion(output, target.cuda())
+        target = target.cuda()
+        if scaler is None:
+            # compute output
+            output = model(input)
+            #print(output.device, target.device)
+            loss = criterion(output, target)
+        else:
+            with autocast():
+                # compute output
+                output = model(input)
+                #print(output.device, target.device)
+                loss = criterion(output, target)
 
         # measure accuracy and record loss
+        output = (output * 0.5 + 0.5) * 255.
+        target = (target * 0.5 + 0.5) * 255.
+        psnr = PSNR()(output, target)
         losses.update(loss.item(), input.size(0))
+        psnr_out.update(psnr.item(), input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+
+        if scaler is None:
+            # compute gradient and do SGD step
+            loss.backward()
+            optimizer.step()
+        else:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -326,9 +351,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
                   'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                  'PSNR {psnr.val:.3f} ({psnr.avg:.3f})\t'
                   'LR: {lr: .6f}'.format(
                    epoch, i, args.epoch_size, batch_time=batch_time,
-                   data_time=data_time, loss=losses, lr=local_lr))
+                   data_time=data_time, loss=losses, psnr=psnr_out, lr=local_lr))
 
 
 def validate(val_loader, model, criterion, args):
@@ -415,6 +441,12 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+def adjust_learning_rate_naive(optimizer, epoch, args):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr = args.lr if epoch < 200 else 2/5 * args.lr
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    return lr
 
 def adjust_learning_rate(optimizer, epoch, args):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""

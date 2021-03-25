@@ -47,7 +47,7 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.0001, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--lr-policy', default='step',
+parser.add_argument('--lr-policy', default='naive',
                     help='lr policy')
 parser.add_argument('--warmup-epochs', default=0, type=int, metavar='N',
                     help='number of warmup epochs')
@@ -278,7 +278,9 @@ def train(train_loader, model, criterion, optimizer, epoch, args, scaler=None):
 
     end = time.time()
 
-    if args.lr_policy == 'step':
+    if args.lr_policy == 'naive':
+        local_lr = adjust_learning_rate_naive(optimizer, epoch, args)
+    elif args.lr_policy == 'step':
         local_lr = adjust_learning_rate(optimizer, epoch, args)
     elif args.lr_policy == 'epoch_poly':
         local_lr = adjust_learning_rate_epoch_poly(optimizer, epoch, args)
@@ -439,6 +441,12 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+def adjust_learning_rate_naive(optimizer, epoch, args):
+    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    lr = args.lr if epoch < 200 else 2/5 * args.lr
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+    return lr
 
 def adjust_learning_rate(optimizer, epoch, args):
     """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""

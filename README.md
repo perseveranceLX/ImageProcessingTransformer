@@ -1,6 +1,8 @@
 # ImageProcessingTransformer
 Third party Pytorch implement of Image Processing Transformer (Pre-Trained Image Processing Transformer arXiv:2012.00364v2)
 
+The latest version contains some important modifications according to the official mindspore implementation. It makes convergecy a lot faster. Please make sure you update to the latest version.
+
 only contain model definition file and train/test file. Dataloader file is not yet released. You could implement your own dataloader. 
 
 To pretrain on random task
